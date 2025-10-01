@@ -7,7 +7,7 @@ package main
 // go build -buildmode=plugin rtiming.go
 //
 
-import "cpsc416-2025w1/Lab01/mr"
+import "Lab01/mr"
 import "fmt"
 import "os"
 import "syscall"

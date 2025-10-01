@@ -4,6 +4,10 @@ import "fmt"
 import "log"
 import "net/rpc"
 import "hash/fnv"
+import "os"
+import "encoding/json"
+import "time"
+import "sort"
 
 
 //
@@ -13,6 +17,15 @@ type KeyValue struct {
 	Key   string
 	Value string
 }
+
+// for sorting by key.
+type ByKey []KeyValue
+
+// for sorting by key.
+func (a ByKey) Len() int           { return len(a) }
+func (a ByKey) Swap(i, j int)      { a[i], a[j] = a[j], a[i] }
+func (a ByKey) Less(i, j int) bool { return a[i].Key < a[j].Key }
+
 
 //
 // use ihash(key) % NReduce to choose the reduce
@@ -35,6 +48,113 @@ func Worker(mapf func(string, string) []KeyValue,
 
 	// uncomment to send the Example RPC to the coordinator.
 	// CallExample()
+
+	for {
+        args := TaskRequestArgs{}
+        reply := TaskReply{}
+        ok := call("Coordinator.AssignTask", &args, &reply)
+        if !ok || reply.TaskType == "done" {
+            break
+        }
+		
+        if reply.TaskType == "wait" {
+            time.Sleep(time.Second)
+            continue
+        }
+
+        if reply.TaskType == "map" {
+            // Read file and run mapf
+            filename := reply.FileName
+			fmt.Print("Worker processing file: ", filename, "\n")
+			content, err := os.ReadFile(filename)
+            if err != nil {
+                log.Fatalf("cannot read %v", filename)
+            }
+            kva := mapf(filename, string(content))
+
+			// Partition kva by reduce task
+            nReduce := reply.NReduce
+            intermediate := make([][]KeyValue, nReduce)
+            for _, kv := range kva {
+                r := ihash(kv.Key) % nReduce
+                intermediate[r] = append(intermediate[r], kv)
+            }
+
+            // Write each partition to a file
+            for r := 0; r < nReduce; r++ {
+                oname := fmt.Sprintf("mr-%d-%d", reply.TaskNum, r)
+                ofile, err := os.Create(oname)
+                if err != nil {
+                    log.Fatalf("cannot create %v", oname)
+                }
+                enc := json.NewEncoder(ofile)
+                for _, kv := range intermediate[r] {
+                    if err := enc.Encode(&kv); err != nil {
+                        log.Fatalf("cannot encode kv to %v", oname)
+                    }
+                }
+                ofile.Close()
+			}
+
+            // Notify coordinator that map task is done
+			doneArgs := TaskDoneArgs{
+				TaskType: "map",
+				TaskNum:  reply.TaskNum,
+			}
+			doneReply := TaskDoneReply{}
+			call("Coordinator.TaskDone", &doneArgs, &doneReply)
+        }
+        
+		if reply.TaskType == "reduce" {
+			reduceNum := reply.TaskNum
+			nMap := reply.NReduce // Actually, number of map tasks
+			var kva []KeyValue
+			// Read all intermediate files for this reduce partition
+			for m := 0; m < nMap; m++ {
+				iname := fmt.Sprintf("mr-%d-%d", m, reduceNum)
+				ifile, err := os.Open(iname)
+				if err != nil {
+					continue // skip missing files
+				}
+				dec := json.NewDecoder(ifile)
+				for {
+					var kv KeyValue
+					if err := dec.Decode(&kv); err != nil {
+						break
+					}
+					kva = append(kva, kv)
+				}
+				ifile.Close()
+			}
+			// Sort by key
+			sort.Sort(ByKey(kva))
+			// Group by key and apply reducef
+			oname := fmt.Sprintf("mr-out-%d", reduceNum)
+			ofile, _ := os.Create(oname)
+			i := 0
+			for i < len(kva) {
+				j := i + 1
+				for j < len(kva) && kva[j].Key == kva[i].Key {
+					j++
+				}
+				values := []string{}
+				for k := i; k < j; k++ {
+					values = append(values, kva[k].Value)
+				}
+				output := reducef(kva[i].Key, values)
+				fmt.Fprintf(ofile, "%v %v\n", kva[i].Key, output)
+				i = j
+			}
+			ofile.Close()
+			// Notify coordinator
+			doneArgs := TaskDoneArgs{
+				TaskType: "reduce",
+				TaskNum:  reduceNum,
+			}
+			doneReply := TaskDoneReply{}
+			call("Coordinator.TaskDone", &doneArgs, &doneReply)
+		}
+    }
 
 }
 

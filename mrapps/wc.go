@@ -6,7 +6,7 @@ package main
 // go build -buildmode=plugin wc.go
 //
 
-import "cpsc416-2025w1/Lab01/mr"
+import "Lab01/mr"
 import "unicode"
 import "strings"
 import "strconv"

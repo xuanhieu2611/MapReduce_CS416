@@ -11,7 +11,7 @@ import (
 	"strings"
 	"time"
 
-	"cpsc416-2025w1/Lab01/mr"
+	"Lab01/mr"
 )
 
 // The map function is called once for each file of input.

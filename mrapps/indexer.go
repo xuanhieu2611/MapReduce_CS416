@@ -7,7 +7,7 @@ package main
 //
 
 import "fmt"
-import "cpsc416-2025w1/Lab01/mr"
+import "Lab01/mr"
 
 import "strings"
 import "unicode"

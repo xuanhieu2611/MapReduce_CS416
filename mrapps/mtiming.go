@@ -7,7 +7,7 @@ package main
 // go build -buildmode=plugin mtiming.go
 //
 
-import "cpsc416-2025w1/Lab01/mr"
+import "Lab01/mr"
 import "strings"
 import "fmt"
 import "os"
