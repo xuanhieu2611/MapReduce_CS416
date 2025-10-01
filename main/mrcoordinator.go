@@ -9,7 +9,7 @@ package main
 // Please do not change this file.
 //
 
-import "cpsc416-2025w1/Lab01/mr"	
+import "Lab01/mr"	
 import "time"
 import "os"
 import "fmt"
