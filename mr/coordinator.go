@@ -1,11 +1,14 @@
 package mr
 
-import "log"
-import "net"
-import "os"
-import "net/rpc"
-import "net/http"
-import "time"
+import (
+	"log"
+	"net"
+	"net/http"
+	"net/rpc"
+	"os"
+	"sync"
+	"time"
+)
 
 type TaskStatus int
 const (
@@ -28,11 +31,14 @@ type Coordinator struct {
     mapTasks []TaskInfo
     reduceTasks []TaskInfo
     phase    string // "map" or "reduce"
+    mu sync.Mutex
 
 }
 
 // Your code here -- RPC handlers for the worker to call.
 func (c *Coordinator) AssignTask(args *TaskRequestArgs, reply *TaskReply) error {
+    c.mu.Lock()
+    defer c.mu.Unlock()
     now := time.Now()
     if c.phase == "map" {
         allDone := true
@@ -119,6 +125,8 @@ func (c *Coordinator) AssignTask(args *TaskRequestArgs, reply *TaskReply) error 
 }
 
 func (c *Coordinator) TaskDone(args *TaskDoneArgs, reply *TaskDoneReply) error {
+    c.mu.Lock()
+    defer c.mu.Unlock()
     if args.TaskType == "map" {
         c.mapTasks[args.TaskNum].Status = Completed
     }
@@ -160,6 +168,8 @@ func (c *Coordinator) server() {
 // if the entire job has finished.
 //
 func (c *Coordinator) Done() bool {
+    c.mu.Lock()
+    defer c.mu.Unlock()
 	ret := true
 
 	// Your code here.

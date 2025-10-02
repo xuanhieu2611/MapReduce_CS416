@@ -1,14 +1,15 @@
 package mr
 
-import "fmt"
-import "log"
-import "net/rpc"
-import "hash/fnv"
-import "os"
-import "encoding/json"
-import "time"
-import "sort"
-
+import (
+	"encoding/json"
+	"fmt"
+	"hash/fnv"
+	"log"
+	"net/rpc"
+	"os"
+	"sort"
+	"time"
+)
 
 //
 // Map functions return a slice of KeyValue.
@@ -65,7 +66,7 @@ func Worker(mapf func(string, string) []KeyValue,
         if reply.TaskType == "map" {
             // Read file and run mapf
             filename := reply.FileName
-			fmt.Print("Worker processing file: ", filename, "\n")
+			// fmt.Print("Worker processing file: ", filename, "\n")
 			content, err := os.ReadFile(filename)
             if err != nil {
                 log.Fatalf("cannot read %v", filename)
@@ -83,17 +84,20 @@ func Worker(mapf func(string, string) []KeyValue,
             // Write each partition to a file
             for r := 0; r < nReduce; r++ {
                 oname := fmt.Sprintf("mr-%d-%d", reply.TaskNum, r)
-                ofile, err := os.Create(oname)
+                tmpfile, err := os.CreateTemp("", "mr-tmp-*")
                 if err != nil {
-                    log.Fatalf("cannot create %v", oname)
+                    log.Fatalf("cannot create temp file for %v", oname)
                 }
-                enc := json.NewEncoder(ofile)
+                enc := json.NewEncoder(tmpfile)
                 for _, kv := range intermediate[r] {
                     if err := enc.Encode(&kv); err != nil {
-                        log.Fatalf("cannot encode kv to %v", oname)
+                        log.Fatalf("cannot encode kv to temp file for %v", oname)
                     }
                 }
-                ofile.Close()
+                tmpfile.Close()
+                if err := os.Rename(tmpfile.Name(), oname); err != nil {
+                    log.Fatalf("cannot rename temp file to %v", oname)
+                }
 			}
 
             // Notify coordinator that map task is done
@@ -130,22 +134,28 @@ func Worker(mapf func(string, string) []KeyValue,
 			sort.Sort(ByKey(kva))
 			// Group by key and apply reducef
 			oname := fmt.Sprintf("mr-out-%d", reduceNum)
-			ofile, _ := os.Create(oname)
-			i := 0
-			for i < len(kva) {
-				j := i + 1
-				for j < len(kva) && kva[j].Key == kva[i].Key {
-					j++
-				}
-				values := []string{}
-				for k := i; k < j; k++ {
-					values = append(values, kva[k].Value)
-				}
-				output := reducef(kva[i].Key, values)
-				fmt.Fprintf(ofile, "%v %v\n", kva[i].Key, output)
-				i = j
-			}
-			ofile.Close()
+            tmpfile, err := os.CreateTemp("", "mr-out-tmp-*")
+            if err != nil {
+                log.Fatalf("cannot create temp file for %v", oname)
+            }
+            i := 0
+            for i < len(kva) {
+                j := i + 1
+                for j < len(kva) && kva[j].Key == kva[i].Key {
+                    j++
+                }
+                values := []string{}
+                for k := i; k < j; k++ {
+                    values = append(values, kva[k].Value)
+                }
+                output := reducef(kva[i].Key, values)
+                fmt.Fprintf(tmpfile, "%v %v\n", kva[i].Key, output)
+                i = j
+            }
+            tmpfile.Close()
+            if err := os.Rename(tmpfile.Name(), oname); err != nil {
+                log.Fatalf("cannot rename temp file to %v", oname)
+            }
 			// Notify coordinator
 			doneArgs := TaskDoneArgs{
 				TaskType: "reduce",
