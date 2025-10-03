@@ -1,6 +1,8 @@
 package mr
 
 import (
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"hash/fnv"
@@ -38,6 +40,13 @@ func ihash(key string) int {
 	return int(h.Sum32() & 0x7fffffff)
 }
 
+// Generate a unique worker ID using UUID
+func generateWorkerID() string {
+	bytes := make([]byte, 16)
+	rand.Read(bytes)
+	return hex.EncodeToString(bytes)
+}
+
 
 //
 // main/mrworker.go calls this function.
@@ -50,8 +59,20 @@ func Worker(mapf func(string, string) []KeyValue,
 	// uncomment to send the Example RPC to the coordinator.
 	// CallExample()
 
+	// Generate unique worker ID
+	workerID := generateWorkerID()
+	
+	// Start heartbeat goroutine
+	heartbeatChan := make(chan bool, 1)
+	go sendHeartbeats(workerID, heartbeatChan)
+	
+	// Cleanup function
+	defer func() {
+		heartbeatChan <- true // Signal to stop heartbeat
+	}()
+
 	for {
-        args := TaskRequestArgs{}
+        args := TaskRequestArgs{WorkerID: workerID}
         reply := TaskReply{}
         ok := call("Coordinator.AssignTask", &args, &reply)
         if !ok || reply.TaskType == "done" {
@@ -130,8 +151,10 @@ func Worker(mapf func(string, string) []KeyValue,
 				}
 				ifile.Close()
 			}
+
 			// Sort by key
 			sort.Sort(ByKey(kva))
+			
 			// Group by key and apply reducef
 			oname := fmt.Sprintf("mr-out-%d", reduceNum)
             tmpfile, err := os.CreateTemp("", "mr-out-tmp-*")
@@ -218,4 +241,31 @@ func call(rpcname string, args interface{}, reply interface{}) bool {
 
 	fmt.Println(err)
 	return false
+}
+
+// Send periodic heartbeats to coordinator
+func sendHeartbeats(workerID string, stopChan chan bool) {
+	ticker := time.NewTicker(1 * time.Second)
+	defer ticker.Stop()
+	
+	for {
+		select {
+		case <-stopChan:
+			return
+		case <-ticker.C:
+			args := HeartbeatArgs{WorkerID: workerID}
+			reply := HeartbeatReply{}
+			
+			ok := call("Coordinator.Heartbeat", &args, &reply)
+			if !ok {
+				// Coordinator unreachable, exit immediately
+				os.Exit(1)
+			}
+			
+			if reply.Status == "shutdown" {
+				// Coordinator is shutting down, exit gracefully
+				os.Exit(0)
+			}
+		}
+	}
 }

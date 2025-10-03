@@ -26,6 +26,7 @@ type ExampleReply struct {
 
 type TaskRequestArgs struct {
     // You can add worker ID or other info if needed
+    WorkerID string
 }
 
 type TaskReply struct {
@@ -41,6 +42,14 @@ type TaskDoneArgs struct {
 }
 
 type TaskDoneReply struct{}
+
+type HeartbeatArgs struct {
+    WorkerID string
+}
+
+type HeartbeatReply struct {
+    Status string // "alive", "shutdown"
+}
 
 
 

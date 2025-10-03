@@ -1,6 +1,7 @@
 package mr
 
 import (
+	"fmt"
 	"log"
 	"net"
 	"net/http"
@@ -20,6 +21,7 @@ const (
 type TaskInfo struct {
     Status      TaskStatus
     StartTime   time.Time
+    WorkerID    string  // Track which worker is processing this task
 }
 
 
@@ -32,7 +34,10 @@ type Coordinator struct {
     reduceTasks []TaskInfo
     phase    string // "map" or "reduce"
     mu sync.Mutex
-
+    
+    // Heartbeat tracking
+    workerLastSeen map[string]time.Time  // workerID -> last heartbeat time
+    shutdown       bool                  // coordinator shutdown flag
 }
 
 // Your code here -- RPC handlers for the worker to call.
@@ -52,6 +57,7 @@ func (c *Coordinator) AssignTask(args *TaskRequestArgs, reply *TaskReply) error 
                 reply.NReduce = c.nReduce
                 task.Status = InProgress
                 task.StartTime = now
+                task.WorkerID = args.WorkerID
                 return nil
             case InProgress:
                 if now.Sub(task.StartTime) > 10*time.Second {
@@ -61,6 +67,7 @@ func (c *Coordinator) AssignTask(args *TaskRequestArgs, reply *TaskReply) error 
                     reply.TaskNum = i
                     reply.NReduce = c.nReduce
                     task.StartTime = now
+                    task.WorkerID = args.WorkerID
                     return nil
                 }
                 allDone = false
@@ -92,6 +99,7 @@ func (c *Coordinator) AssignTask(args *TaskRequestArgs, reply *TaskReply) error 
                 reply.NReduce = len(c.mapTasks)
                 task.Status = InProgress
                 task.StartTime = now
+                task.WorkerID = args.WorkerID
                 return nil
             case InProgress:
                 if now.Sub(task.StartTime) > 10*time.Second {
@@ -100,6 +108,7 @@ func (c *Coordinator) AssignTask(args *TaskRequestArgs, reply *TaskReply) error 
                     reply.TaskNum = r
                     reply.NReduce = len(c.mapTasks)
                     task.StartTime = now
+                    task.WorkerID = args.WorkerID
                     return nil
                 }
                 allDone = false
@@ -134,6 +143,92 @@ func (c *Coordinator) TaskDone(args *TaskDoneArgs, reply *TaskDoneReply) error {
         c.reduceTasks[args.TaskNum].Status = Completed
     }
     return nil
+}
+
+// Heartbeat RPC handler
+func (c *Coordinator) Heartbeat(args *HeartbeatArgs, reply *HeartbeatReply) error {
+    c.mu.Lock()
+    defer c.mu.Unlock()
+    
+    // Update worker's last seen time
+    c.workerLastSeen[args.WorkerID] = time.Now()
+    
+    // Check if coordinator is shutting down
+    if c.shutdown {
+        reply.Status = "shutdown"
+    } else {
+        reply.Status = "alive"
+    }
+    
+    return nil
+}
+
+// Health monitoring function
+func (c *Coordinator) checkWorkerHealth() {
+    c.mu.Lock()
+    defer c.mu.Unlock()
+    
+    now := time.Now()
+    crashedWorkers := make([]string, 0)
+    
+    // Check for workers that haven't sent heartbeat in 3 seconds
+    for workerID, lastSeen := range c.workerLastSeen {
+        if now.Sub(lastSeen) > 3*time.Second {
+            crashedWorkers = append(crashedWorkers, workerID)
+        }
+    }
+    
+    // Clean up crashed workers
+    for _, workerID := range crashedWorkers {
+        delete(c.workerLastSeen, workerID)
+        c.cleanupCrashedWorker(workerID)
+    }
+}
+
+// Clean up tasks assigned to crashed workers
+func (c *Coordinator) cleanupCrashedWorker(workerID string) {
+    // Reset map tasks assigned to this worker
+    for i := range c.mapTasks {
+        if c.mapTasks[i].WorkerID == workerID && c.mapTasks[i].Status == InProgress {
+            c.mapTasks[i].Status = Idle
+            c.mapTasks[i].WorkerID = ""
+            c.cleanupPartialFiles("map", i)
+        }
+    }
+    
+    // Reset reduce tasks assigned to this worker
+    for i := range c.reduceTasks {
+        if c.reduceTasks[i].WorkerID == workerID && c.reduceTasks[i].Status == InProgress {
+            c.reduceTasks[i].Status = Idle
+            c.reduceTasks[i].WorkerID = ""
+            c.cleanupPartialFiles("reduce", i)
+        }
+    }
+}
+
+// Clean up partial files from crashed workers
+func (c *Coordinator) cleanupPartialFiles(taskType string, taskNum int) {
+    if taskType == "map" {
+        // Remove partial intermediate files
+        for r := 0; r < c.nReduce; r++ {
+            filename := fmt.Sprintf("mr-%d-%d", taskNum, r)
+            os.Remove(filename)
+        }
+    } else if taskType == "reduce" {
+        // Remove partial output file
+        filename := fmt.Sprintf("mr-out-%d", taskNum)
+        os.Remove(filename)
+    }
+}
+
+// Start health monitoring goroutine
+func (c *Coordinator) startHealthMonitor() {
+    go func() {
+        ticker := time.NewTicker(2 * time.Second)
+        for range ticker.C {
+            c.checkWorkerHealth()
+        }
+    }()
 }
 
 //
@@ -197,11 +292,13 @@ func MakeCoordinator(files []string, nReduce int) *Coordinator {
         mapTasks:   make([]TaskInfo, len(files)),
         reduceTasks: make([]TaskInfo, nReduce),
         phase:      "map",
+        workerLastSeen: make(map[string]time.Time),
+        shutdown:   false,
 	}
 
 	// Your code here.
 
-
 	c.server()
+	c.startHealthMonitor()
 	return &c
 }
